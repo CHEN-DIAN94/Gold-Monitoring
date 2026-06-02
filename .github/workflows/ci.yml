@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  validate:
+    name: 验证代码
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 验证 Python 语法
+        run: python -m py_compile 黄金监控.py
+
+      - name: 验证配置文件格式
+        run: python -c "import json; json.load(open('config.json', encoding='utf-8')); print('config.json OK')"

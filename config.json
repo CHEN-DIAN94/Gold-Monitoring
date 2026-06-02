@@ -1,0 +1,39 @@
+{
+  "webhooks": [
+    "YOUR_WEBHOOK_URL_HERE"
+  ],
+  "symbols": {
+    "gold": {
+      "name": "黄金",
+      "code": "hf_GC",
+      "unit": "美元/盎司",
+      "base_price": 4720,
+      "price_threshold": 4720,
+      "volatility_threshold": 1.0,
+      "change_report_threshold": 0.1
+    }
+  },
+  "check_interval": 300,
+  "time_periods": {
+    "day": {
+      "start": 8,
+      "end": 22,
+      "volatility_multiplier": 1.0
+    },
+    "night": {
+      "start": 22,
+      "end": 8,
+      "volatility_multiplier": 1.5
+    }
+  },
+  "weekend_check": false,
+  "max_history_days": 30,
+  "log_file": "monitor.log",
+  "log_level": "INFO",
+  "data_file": "gold_data.json",
+  "prediction_file": "predictions.json",
+  "web_dashboard": {
+    "enabled": true,
+    "port": 8080
+  }
+}

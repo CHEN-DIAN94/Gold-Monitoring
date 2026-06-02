@@ -1,0 +1,26 @@
+# 依赖目录
+node_modules/
+__pycache__/
+*.pyc
+
+# 环境变量和敏感信息
+.env
+*.env.local
+*.env.production
+
+# 数据文件
+*_data.json
+predictions.json
+gold_data.json
+
+# 日志文件
+*.log
+*.log.*
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db

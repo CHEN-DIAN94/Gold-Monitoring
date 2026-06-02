@@ -1,0 +1,30 @@
+{
+  "name": "email-sender-system",
+  "version": "1.0.0",
+  "description": "实时邮箱发送系统",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node app.js"
+  },
+  "keywords": [
+    "email",
+    "sender",
+    "smtp"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "imap": "^0.8.19",
+    "mailparser": "^3.9.8",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^6.9.13",
+    "ws": "^8.20.0"
+  }
+}
