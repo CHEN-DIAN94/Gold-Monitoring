@@ -1,6 +1,6 @@
 {
   "webhooks": [
-    "YOUR_WEBHOOK_URL_HERE"
+    "https://open.feishu.cn/open-apis/bot/v2/hook/c2f053c0-bc8c-464b-8de3-54fafb6b24ca"
   ],
   "symbols": {
     "gold": {
