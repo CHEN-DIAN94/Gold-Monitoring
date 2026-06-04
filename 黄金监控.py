@@ -83,14 +83,21 @@ def send_feishu(title, content):
     results = []
     for webhook in config.webhooks:
         try:
+            logger.info(f"正在发送到 webhook: {webhook[:50]}...")
             data = {
                 "msg_type": "text",
                 "content": {"text": f"{title}\n{content}"}
             }
             response = requests.post(webhook, json=data, timeout=10)
-            results.append(response.status_code == 200)
+            if response.status_code == 200:
+                logger.info(f"✅ Webhook 发送成功")
+                results.append(True)
+            else:
+                logger.error(f"❌ Webhook 返回状态码: {response.status_code}, 响应: {response.text}")
+                results.append(False)
         except Exception as e:
-            logger.error(f"Send to webhook failed: {e}")
+            logger.error(f"❌ Webhook 发送异常: {e}")
+            results.append(False)
     return any(results) if results else False
 
 def get_price_from_sina(code):
@@ -691,6 +698,10 @@ def start_web_dashboard():
 def run_once():
     """单次运行模式：获取所有品种价格，发送早报后退出"""
     logger.info("单次运行模式启动")
+    logger.info(f"Webhooks 配置: {len(config.webhooks)} 个")
+    if not config.webhooks:
+        logger.error("❌ 没有配置 webhook 地址！请检查 FEISHU_WEBHOOK 环境变量或 config.json")
+
     today = datetime.now().strftime('%Y-%m-%d')
     weekday = datetime.now().strftime('%A')
     results = []
@@ -700,11 +711,14 @@ def run_once():
         unit = symbol_cfg.get("unit", "")
         base_price = symbol_cfg.get("base_price", 0)
 
+        logger.info(f"正在获取 {symbol_name} 价格...")
         current_price = get_price(symbol_key)
         if current_price is None:
+            logger.warning(f"❌ {symbol_name} 价格获取失败")
             results.append(f"❌ {symbol_name}: 获取价格失败")
             continue
 
+        logger.info(f"✅ {symbol_name} 当前价格: ${current_price:.2f}")
         change_pct = ((current_price - base_price) / base_price * 100) if base_price else 0
         direction = "📈" if change_pct > 0 else ("📉" if change_pct < 0 else "➡️")
 
@@ -733,8 +747,12 @@ def run_once():
     if results:
         header = f"☀️ 早安行情速报\n📅 {today} {weekday}\n{'='*30}"
         content = header + "\n\n" + "\n\n".join(results)
-        send_feishu("每日行情早报", content)
-        logger.info("早报发送完成")
+        logger.info(f"准备发送早报，webhooks: {config.webhooks}")
+        success = send_feishu("每日行情早报", content)
+        if success:
+            logger.info("✅ 早报发送成功")
+        else:
+            logger.error("❌ 早报发送失败，请检查 webhook 地址是否有效")
     else:
         logger.warning("无可用数据")
 

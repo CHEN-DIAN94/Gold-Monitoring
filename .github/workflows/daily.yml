@@ -2,8 +2,9 @@ name: 每日行情早报
 
 on:
   schedule:
-    # 每天早上8点（UTC时间0点 = 北京时间8点）
-    - cron: '0 0 * * *'
+    # UTC 20:00 = 北京时间 4:00
+    # GitHub Actions 延迟严重，提前4小时以确保8点前到达
+    - cron: '0 20 * * *'
   workflow_dispatch:  # 支持手动触发
 
 jobs:
@@ -20,6 +21,12 @@ jobs:
 
       - name: 安装依赖
         run: pip install requests
+
+      - name: 显示运行时间
+        run: |
+          echo "当前 UTC 时间: $(date -u)"
+          echo "当前北京时间: $(TZ=Asia/Shanghai date)"
+          echo "Webhook 配置: ${{ secrets.FEISHU_WEBHOOK != '' }}"
 
       - name: 发送每日行情早报
         env:
