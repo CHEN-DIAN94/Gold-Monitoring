@@ -26,6 +26,7 @@ class Config:
         self.data_file = "gold_data.json"
         self.prediction_file = "predictions.json"
         self.web_dashboard = {"enabled": False, "port": 8080}
+        self.domestic_gold = {"name": "国内黄金", "unit": "元/克", "enabled": True}
         self.load()
 
     def load(self):
@@ -54,6 +55,7 @@ class Config:
         self.data_file = cfg.get("data_file", "gold_data.json")
         self.prediction_file = cfg.get("prediction_file", "predictions.json")
         self.web_dashboard = cfg.get("web_dashboard", {"enabled": False, "port": 8080})
+        self.domestic_gold = cfg.get("domestic_gold", {"name": "国内黄金", "unit": "元/克", "enabled": True})
         # 环境变量覆盖：支持从环境变量读取 webhook（用于 GitHub Actions）
         env_webhook = os.environ.get("FEISHU_WEBHOOK")
         if env_webhook:
@@ -150,6 +152,138 @@ def get_price_from_fallback(code):
             return rate * 100
     except Exception as e:  # 修复：改为 except Exception
         logger.error(f"Fallback API error: {e}")
+    return None
+
+# ==================== 国内金价数据源 ====================
+
+def get_domestic_price_from_sina():
+    """从新浪财经获取沪金主力合约价格（元/克）"""
+    url = "https://hq.sinajs.cn/list=au_0"
+    headers = {"Referer": "https://finance.sina.com.cn"}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            text = response.text
+            if not text or '=' not in text:
+                return None
+            data = text.split('=')[1].strip('";\n')
+            if not data or ',' not in data:
+                return None
+            price_str = data.split(',')[0]
+            if not price_str or price_str == '0':
+                return None
+            return float(price_str)
+    except (ValueError, IndexError) as e:
+        logger.warning(f"国内金价 Sina parse error: {e}")
+    except Exception as e:
+        logger.warning(f"国内金价 Sina request error: {e}")
+    return None
+
+def get_domestic_price_from_eastmoney():
+    """从东方财富获取上海金交所 Au9999 价格（元/克）"""
+    url = "https://push2.eastmoney.com/api/qt/stock/get"
+    params = {
+        "secid": "113.Au9999",
+        "fields": "f43,f44,f45,f46,f170"
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data and data.get("data"):
+                price = data["data"].get("f43")
+                if price and price > 0:
+                    return float(price) / 100  # 东方财富返回的价格需要除以100
+    except Exception as e:
+        logger.warning(f"国内金价 Eastmoney error: {e}")
+    return None
+
+def get_domestic_price():
+    """获取国内金价（元/克），带多重数据源故障转移"""
+    sources = [
+        ("Sina沪金", get_domestic_price_from_sina),
+        ("东方财富Au9999", get_domestic_price_from_eastmoney),
+    ]
+    for name, fetcher in sources:
+        try:
+            price = fetcher()
+            if price and price > 0:
+                logger.info(f"国内金价 from {name}: ¥{price:.2f}/克")
+                return price, name
+        except Exception as e:
+            logger.warning(f"国内金价源 {name} failed: {e}")
+
+    # 兜底方案：用国际金价 × 汇率 ÷ 31.1035 换算
+    try:
+        intl_price = get_price("gold")
+        rate = get_usdcny_rate()
+        if intl_price and rate:
+            converted = intl_price * rate / 31.1035
+            logger.info(f"国内金价 from 国际价换算: ¥{converted:.2f}/克")
+            return converted, "国际价换算"
+    except Exception as e:
+        logger.warning(f"国内金价换算失败: {e}")
+
+    logger.error("所有国内金价数据源均失败")
+    return None, None
+
+# ==================== 汇率数据源 ====================
+
+def get_usdcny_from_sina():
+    """从新浪财经获取 USD/CNY 汇率"""
+    url = "https://hq.sinajs.cn/list=fx_susdcny"
+    headers = {"Referer": "https://finance.sina.com.cn"}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            text = response.text
+            if not text or '=' not in text:
+                return None
+            data = text.split('=')[1].strip('";\n')
+            if not data or ',' not in data:
+                return None
+            # 新浪汇率数据格式：名称,当前价,...，取第二个字段
+            parts = data.split(',')
+            if len(parts) >= 2:
+                rate_str = parts[1]
+                if rate_str and rate_str != '0':
+                    return float(rate_str)
+    except (ValueError, IndexError) as e:
+        logger.warning(f"汇率 Sina parse error: {e}")
+    except Exception as e:
+        logger.warning(f"汇率 Sina request error: {e}")
+    return None
+
+def get_usdcny_from_frankfurter():
+    """从 Frankfurter API 获取 USD/CNY 汇率（免费无需 key）"""
+    url = "https://api.frankfurter.app/latest?from=USD&to=CNY"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            rate = data.get("rates", {}).get("CNY")
+            if rate:
+                return float(rate)
+    except Exception as e:
+        logger.warning(f"汇率 Frankfurter error: {e}")
+    return None
+
+def get_usdcny_rate():
+    """获取 USD/CNY 汇率，带多重数据源故障转移"""
+    sources = [
+        ("Sina汇率", get_usdcny_from_sina),
+        ("Frankfurter", get_usdcny_from_frankfurter),
+    ]
+    for name, fetcher in sources:
+        try:
+            rate = fetcher()
+            if rate and rate > 0:
+                logger.info(f"USD/CNY from {name}: {rate:.4f}")
+                return rate
+        except Exception as e:
+            logger.warning(f"汇率源 {name} failed: {e}")
+
+    logger.error("所有汇率数据源均失败")
     return None
 
 def get_price(symbol_key):
@@ -728,7 +862,7 @@ def run_once():
         prices.append(current_price)
         trend = analyze_trend(prices, base_price) if len(prices) >= 2 else "数据不足"
 
-        line = f"{direction} {symbol_name} ({unit})\n当前价格: ${current_price:.2f}\n较基准变化: {change_pct:+.2f}%\n{trend}"
+        line = f"{direction} {symbol_name} ({unit})\n当前价格: ${current_price:.2f}\n{trend}"
         results.append(line)
 
         # 保存今日数据
@@ -743,6 +877,26 @@ def run_once():
             if len(daily_data) > config.max_history_days:
                 daily_data = daily_data[-config.max_history_days:]
             save_daily_data(symbol_key, daily_data)
+
+    # 获取国内金价
+    domestic_cfg = config.domestic_gold
+    if domestic_cfg.get("enabled", True):
+        logger.info("正在获取国内金价...")
+        domestic_price, domestic_source = get_domestic_price()
+        if domestic_price:
+            domestic_name = domestic_cfg.get("name", "国内黄金")
+            domestic_unit = domestic_cfg.get("unit", "元/克")
+            results.append(f"📊 {domestic_name} ({domestic_unit})\n当前价格: ¥{domestic_price:.2f}\n数据来源: {domestic_source}")
+        else:
+            results.append("❌ 国内黄金: 获取价格失败")
+
+    # 获取汇率
+    logger.info("正在获取美元/人民币汇率...")
+    usdcny_rate = get_usdcny_rate()
+    if usdcny_rate:
+        results.append(f"💱 汇率参考\n美元/人民币: {usdcny_rate:.4f}")
+    else:
+        results.append("❌ 汇率: 获取失败")
 
     if results:
         header = f"☀️ 早安行情速报\n📅 {today} {weekday}\n{'='*30}"

@@ -35,5 +35,10 @@
   "web_dashboard": {
     "enabled": true,
     "port": 8080
+  },
+  "domestic_gold": {
+    "name": "国内黄金",
+    "unit": "元/克",
+    "enabled": true
   }
 }
