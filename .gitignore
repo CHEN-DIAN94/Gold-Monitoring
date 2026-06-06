@@ -12,6 +12,7 @@ __pycache__/
 *_data.json
 predictions.json
 gold_data.json
+report_history.json
 
 # 日志文件
 *.log

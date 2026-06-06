@@ -22,6 +22,16 @@ jobs:
       - name: 安装依赖
         run: pip install requests
 
+      - name: 恢复历史数据缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            gold_data.json
+            report_history.json
+          key: gold-data-${{ github.run_id }}
+          restore-keys: |
+            gold-data-
+
       - name: 显示运行时间
         run: |
           echo "当前 UTC 时间: $(date -u)"

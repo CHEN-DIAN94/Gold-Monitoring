@@ -328,6 +328,28 @@ def save_daily_data(symbol_key, daily_data):
     except Exception as e:
         logger.error(f"Save data error: {e}")
 
+def load_report_history():
+    """加载每日播报历史数据（用于较昨日对比）"""
+    history_file = os.path.join(BASE_DIR, "report_history.json")
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Load report history error: {e}")
+    return []
+
+def save_report_history(history):
+    """保存每日播报历史数据，最多保留30天"""
+    history_file = os.path.join(BASE_DIR, "report_history.json")
+    if len(history) > 30:
+        history = history[-30:]
+    try:
+        with open(history_file, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Save report history error: {e}")
+
 def load_predictions():
     pred_file = os.path.join(BASE_DIR, config.prediction_file)
     if os.path.exists(pred_file):
@@ -862,7 +884,34 @@ def run_once():
         prices.append(current_price)
         trend = analyze_trend(prices, base_price) if len(prices) >= 2 else "数据不足"
 
-        line = f"{direction} {symbol_name} ({unit})\n当前价格: ${current_price:.2f}\n{trend}"
+        # ---- 较昨日变化 ----
+        yesterday_line = ""
+        if daily_data and len(daily_data) >= 1:
+            yesterday_close = daily_data[-1]["close"]
+            day_change = current_price - yesterday_close
+            day_change_pct = (day_change / yesterday_close) * 100
+            day_emoji = "🔺" if day_change > 0 else ("🔻" if day_change < 0 else "➖")
+            yesterday_line = f"\n{day_emoji} 较昨日: {day_change:+.2f} ({day_change_pct:+.2f}%)"
+
+        # ---- 近七天趋势 ----
+        week_line = ""
+        if daily_data and len(daily_data) >= 7:
+            week_ago_close = daily_data[-7]["close"]
+            week_change = current_price - week_ago_close
+            week_change_pct = (week_change / week_ago_close) * 100
+            week_emoji = "📈" if week_change > 0 else ("📉" if week_change < 0 else "➡️")
+            week_trend_label = "上涨" if week_change > 0 else ("下跌" if week_change < 0 else "持平")
+            week_line = f"\n{week_emoji} 近七天: {week_trend_label} {week_change:+.2f} ({week_change_pct:+.2f}%)"
+        elif daily_data and len(daily_data) >= 2:
+            earliest = daily_data[0]["close"]
+            week_change = current_price - earliest
+            week_change_pct = (week_change / earliest) * 100
+            week_emoji = "📈" if week_change > 0 else ("📉" if week_change < 0 else "➡️")
+            week_trend_label = "上涨" if week_change > 0 else ("下跌" if week_change < 0 else "持平")
+            days_count = len(daily_data)
+            week_line = f"\n{week_emoji} 近{days_count}天: {week_trend_label} {week_change:+.2f} ({week_change_pct:+.2f}%)"
+
+        line = f"{direction} {symbol_name} ({unit})\n当前价格: ${current_price:.2f}{yesterday_line}{week_line}\n{trend}"
         results.append(line)
 
         # 保存今日数据
@@ -878,7 +927,13 @@ def run_once():
                 daily_data = daily_data[-config.max_history_days:]
             save_daily_data(symbol_key, daily_data)
 
+    # 加载播报历史（用于较昨日/近七天对比）
+    report_history = load_report_history()
+    history_by_date = {h["date"]: h for h in report_history}
+
     # 获取国内金价
+    domestic_price = None
+    domestic_source = None
     domestic_cfg = config.domestic_gold
     if domestic_cfg.get("enabled", True):
         logger.info("正在获取国内金价...")
@@ -886,17 +941,46 @@ def run_once():
         if domestic_price:
             domestic_name = domestic_cfg.get("name", "国内黄金")
             domestic_unit = domestic_cfg.get("unit", "元/克")
-            results.append(f"📊 {domestic_name} ({domestic_unit})\n当前价格: ¥{domestic_price:.2f}\n数据来源: {domestic_source}")
+            domestic_yesterday = ""
+            domestic_week = ""
+            # 找昨日数据
+            yesterday_entry = history_by_date.get((datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
+            if yesterday_entry and yesterday_entry.get("domestic_price"):
+                y_price = yesterday_entry["domestic_price"]
+                d_change = domestic_price - y_price
+                d_pct = (d_change / y_price) * 100
+                d_emoji = "🔺" if d_change > 0 else ("🔻" if d_change < 0 else "➖")
+                domestic_yesterday = f"\n{d_emoji} 较昨日: {d_change:+.2f} ({d_pct:+.2f}%)"
+            # 找7天前数据
+            week_ago_entry = history_by_date.get((datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d'))
+            if week_ago_entry and week_ago_entry.get("domestic_price"):
+                w_price = week_ago_entry["domestic_price"]
+                w_change = domestic_price - w_price
+                w_pct = (w_change / w_price) * 100
+                w_emoji = "📈" if w_change > 0 else ("📉" if w_change < 0 else "➡️")
+                w_label = "上涨" if w_change > 0 else ("下跌" if w_change < 0 else "持平")
+                domestic_week = f"\n{w_emoji} 近七天: {w_label} {w_change:+.2f} ({w_pct:+.2f}%)"
+            results.append(f"📊 {domestic_name} ({domestic_unit})\n当前价格: ¥{domestic_price:.2f}{domestic_yesterday}{domestic_week}\n数据来源: {domestic_source}")
         else:
             results.append("❌ 国内黄金: 获取价格失败")
 
     # 获取汇率
+    usdcny_rate = None
     logger.info("正在获取美元/人民币汇率...")
     usdcny_rate = get_usdcny_rate()
     if usdcny_rate:
         results.append(f"💱 汇率参考\n美元/人民币: {usdcny_rate:.4f}")
     else:
         results.append("❌ 汇率: 获取失败")
+
+    # 保存今日数据到播报历史
+    today_record = {"date": today}
+    if domestic_price:
+        today_record["domestic_price"] = domestic_price
+    if usdcny_rate:
+        today_record["usdcny_rate"] = usdcny_rate
+    report_history.append(today_record)
+    save_report_history(report_history)
 
     if results:
         header = f"☀️ 早安行情速报\n📅 {today} {weekday}\n{'='*30}"
