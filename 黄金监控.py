@@ -13,6 +13,8 @@ import io
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
+WEEKDAYS_CN = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
+
 class Config:
     def __init__(self):
         self.webhooks = []
@@ -93,6 +95,43 @@ def send_feishu(title, content):
             response = requests.post(webhook, json=data, timeout=10)
             if response.status_code == 200:
                 logger.info(f"✅ Webhook 发送成功")
+                results.append(True)
+            else:
+                logger.error(f"❌ Webhook 返回状态码: {response.status_code}, 响应: {response.text}")
+                results.append(False)
+        except Exception as e:
+            logger.error(f"❌ Webhook 发送异常: {e}")
+            results.append(False)
+    return any(results) if results else False
+
+def send_feishu_post(title, content_lines):
+    """发送飞书富文本消息（post 类型），支持加粗和更好的排版"""
+    # 将每一行转为飞书 post 格式的段落
+    paragraphs = []
+    for line in content_lines:
+        if line.strip() == "":
+            paragraphs.append([{"tag": "text", "text": ""}])
+        else:
+            paragraphs.append([{"tag": "text", "text": line}])
+
+    results = []
+    for webhook in config.webhooks:
+        try:
+            logger.info(f"正在发送富文本到 webhook: {webhook[:50]}...")
+            data = {
+                "msg_type": "post",
+                "content": {
+                    "post": {
+                        "zh_cn": {
+                            "title": title,
+                            "content": paragraphs
+                        }
+                    }
+                }
+            }
+            response = requests.post(webhook, json=data, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"✅ 富文本 Webhook 发送成功")
                 results.append(True)
             else:
                 logger.error(f"❌ Webhook 返回状态码: {response.status_code}, 响应: {response.text}")
@@ -406,40 +445,84 @@ def get_prediction_accuracy():
     accuracy = (correct / len(verified)) * 100
     return f"预测准确率: {accuracy:.1f}% ({correct}/{len(verified)})"
 
-def analyze_trend(prices, base_price):
-    # 修复：移除默认值 4720，必须传入实际 base_price
+def analyze_trend(prices, base_price=None):
+    """基于真实技术指标的趋势分析（MA + ATR）"""
     if len(prices) < 2:
         return "数据不足，无法判断"
-    if not base_price or base_price <= 0:
-        return "基准价格无效，无法分析"
 
     current = prices[-1]
-    change_percent = ((current - base_price) / base_price) * 100
+    ma3 = sum(prices[-3:]) / min(len(prices), 3)
+    atr = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices))) / (len(prices) - 1)
+    support = current - atr
+    resistance = current + atr
 
-    # 修复：动态计算支撑位和压力位，不再硬编码
-    support = current * 0.99
-    resistance = current * 1.01
-
-    if change_percent > 5:
-        trend = "强势上涨"
-        guess = f"可能继续走高，上方压力位在{resistance:.2f}附近，建议关注回调风险"
-    elif change_percent > 2:
-        trend = "温和上涨"
-        guess = f"市场情绪偏多，上方压力位在{resistance:.2f}附近，短期仍有上涨空间"
-    elif change_percent > 0:
-        trend = "小幅上涨"
-        guess = f"稳中有升，区间{support:.2f}-{resistance:.2f}，短期可能维持震荡整理"
-    elif change_percent > -2:
-        trend = "小幅下跌"
-        guess = f"短期调整，下方支撑位在{support:.2f}附近，中期仍看好"
-    elif change_percent > -5:
-        trend = "明显下跌"
-        guess = f"下方支撑位在{support:.2f}附近，买盘支撑较强，中长期仍有配置价值"
+    # 判断趋势方向
+    if ma3 > prices[-2] and current > ma3:
+        ma_trend, ma_desc = "上行", "多头排列，价格在均线上方运行"
+    elif ma3 < prices[-2] and current < ma3:
+        ma_trend, ma_desc = "下行", "空头排列，价格在均线下方运行"
     else:
-        trend = "大幅下跌"
-        guess = f"超跌反弹信号出现，支撑位在{support:.2f}附近，建议分批布局"
+        ma_trend, ma_desc = "震荡", "均线走平，短期方向不明"
+
+    # 综合判断
+    if ma_trend == "上行":
+        trend, confidence = "上行趋势", "偏强"
+        guess = f"{ma_desc}，上方压力位在{resistance:.2f}附近"
+    elif ma_trend == "下行":
+        trend, confidence = "下行趋势", "偏弱"
+        guess = f"{ma_desc}，下方支撑位在{support:.2f}附近"
+    else:
+        trend, confidence = "窄幅震荡", "一般"
+        guess = f"{ma_desc}，区间{support:.2f}-{resistance:.2f}"
 
     return f"当前趋势: {trend}\n预测: {guess}"
+
+
+def brief_prediction(prices):
+    """基于近期价格的简化版短期预测（用于早报）"""
+    if len(prices) < 3:
+        return ""
+
+    ma3 = sum(prices[-3:]) / 3
+    ma5 = sum(prices[-5:]) / min(len(prices), 5) if len(prices) >= 5 else ma3
+    atr = sum(abs(prices[i] - prices[i-1]) for i in range(1, len(prices))) / (len(prices) - 1)
+    current = prices[-1]
+
+    up_days = sum(1 for i in range(1, len(prices)) if prices[i] > prices[i-1])
+    down_days = len(prices) - 1 - up_days
+    near_ma3 = abs(current - ma3) / ma3 < 0.005
+
+    score = 0
+    signals = []
+    if ma3 > ma5:
+        score += 2
+        signals.append("短期均线上穿中期均线")
+    elif ma3 < ma5:
+        score -= 2
+        signals.append("短期均线下穿中期均线")
+    if up_days > down_days:
+        score += 1
+    elif down_days > up_days:
+        score -= 1
+    if not near_ma3:
+        score += 1 if current > ma3 else -1
+
+    if score >= 3:
+        pred, conf = "看涨", "较高"
+    elif score >= 2:
+        pred, conf = "偏多", "一般"
+    elif score <= -3:
+        pred, conf = "看跌", "较高"
+    elif score <= -2:
+        pred, conf = "偏空", "一般"
+    else:
+        pred, conf = "震荡", "一般"
+
+    pred_high = current + atr * 0.5
+    pred_low = current - atr * 0.5
+    signal_text = "，".join(signals[:2]) if signals else "无明显信号"
+
+    return f"📊 短期展望: {pred} (置信度: {conf})\n   预测区间: {pred_low:.2f} - {pred_high:.2f}\n   技术信号: {signal_text}"
 
 def predict_tomorrow(daily_data, symbol_name=""):
     if len(daily_data) < 2:
@@ -859,7 +942,9 @@ def run_once():
         logger.error("❌ 没有配置 webhook 地址！请检查 FEISHU_WEBHOOK 环境变量或 config.json")
 
     today = datetime.now().strftime('%Y-%m-%d')
-    weekday = datetime.now().strftime('%A')
+    weekday = WEEKDAYS_CN[datetime.now().weekday()]
+    now_time = datetime.now().strftime('%H:%M')
+    is_wkend = datetime.now().weekday() >= 5
     results = []
 
     for symbol_key, symbol_cfg in config.symbols.items():
@@ -876,13 +961,13 @@ def run_once():
 
         logger.info(f"✅ {symbol_name} 当前价格: ${current_price:.2f}")
         change_pct = ((current_price - base_price) / base_price * 100) if base_price else 0
-        direction = "📈" if change_pct > 0 else ("📉" if change_pct < 0 else "➡️")
+        direction = "🪙" if change_pct >= 0 else "📉"
 
         # 加载历史数据进行趋势分析
         daily_data = load_daily_data(symbol_key)
         prices = [d["close"] for d in daily_data[-7:]] if daily_data else []
         prices.append(current_price)
-        trend = analyze_trend(prices, base_price) if len(prices) >= 2 else "数据不足"
+        trend = analyze_trend(prices) if len(prices) >= 2 else "数据不足"
 
         # ---- 较昨日变化 ----
         yesterday_line = ""
@@ -911,21 +996,32 @@ def run_once():
             days_count = len(daily_data)
             week_line = f"\n{week_emoji} 近{days_count}天: {week_trend_label} {week_change:+.2f} ({week_change_pct:+.2f}%)"
 
-        line = f"{direction} {symbol_name} ({unit})\n当前价格: ${current_price:.2f}{yesterday_line}{week_line}\n{trend}"
+        # ---- 短期预测 ----
+        prediction_line = ""
+        if len(prices) >= 3:
+            prediction_line = f"\n{brief_prediction(prices)}"
+
+        line = f"{direction} {symbol_name} ({unit})\n当前价格: ${current_price:.2f}{yesterday_line}{week_line}\n{trend}{prediction_line}"
         results.append(line)
 
-        # 保存今日数据
+        # 保存今日数据（标记为快照，避免覆盖连续监控的真实 OHLC）
         if daily_data:
-            daily_data.append({
-                "date": today,
-                "open": current_price,
-                "close": current_price,
-                "high": current_price,
-                "low": current_price
-            })
-            if len(daily_data) > config.max_history_days:
-                daily_data = daily_data[-config.max_history_days:]
-            save_daily_data(symbol_key, daily_data)
+            # 如果最新记录已是今日且来源为完整 OHLC（有 open != close 或 high > low），不覆盖
+            latest = daily_data[-1] if daily_data else None
+            if latest and latest.get("date") == today and latest.get("source") != "snapshot":
+                logger.info(f"今日已有完整 OHLC 数据，跳过快照保存")
+            else:
+                daily_data.append({
+                    "date": today,
+                    "open": current_price,
+                    "close": current_price,
+                    "high": current_price,
+                    "low": current_price,
+                    "source": "snapshot"
+                })
+                if len(daily_data) > config.max_history_days:
+                    daily_data = daily_data[-config.max_history_days:]
+                save_daily_data(symbol_key, daily_data)
 
     # 加载播报历史（用于较昨日/近七天对比）
     report_history = load_report_history()
@@ -960,7 +1056,13 @@ def run_once():
                 w_emoji = "📈" if w_change > 0 else ("📉" if w_change < 0 else "➡️")
                 w_label = "上涨" if w_change > 0 else ("下跌" if w_change < 0 else "持平")
                 domestic_week = f"\n{w_emoji} 近七天: {w_label} {w_change:+.2f} ({w_pct:+.2f}%)"
-            results.append(f"📊 {domestic_name} ({domestic_unit})\n当前价格: ¥{domestic_price:.2f}{domestic_yesterday}{domestic_week}\n数据来源: {domestic_source}")
+            # ---- 国内金价趋势分析 ----
+            domestic_trend = ""
+            domestic_prices = [h["domestic_price"] for h in report_history if h.get("domestic_price")][-7:]
+            domestic_prices.append(domestic_price)
+            if len(domestic_prices) >= 2:
+                domestic_trend = f"\n{analyze_trend(domestic_prices)}"
+            results.append(f"📊 {domestic_name} ({domestic_unit})\n当前价格: ¥{domestic_price:.2f}{domestic_yesterday}{domestic_week}{domestic_trend}\n数据来源: {domestic_source}")
         else:
             results.append("❌ 国内黄金: 获取价格失败")
 
@@ -969,7 +1071,15 @@ def run_once():
     logger.info("正在获取美元/人民币汇率...")
     usdcny_rate = get_usdcny_rate()
     if usdcny_rate:
-        results.append(f"💱 汇率参考\n美元/人民币: {usdcny_rate:.4f}")
+        rate_change_line = ""
+        yesterday_entry = history_by_date.get((datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
+        if yesterday_entry and yesterday_entry.get("usdcny_rate"):
+            r_old = yesterday_entry["usdcny_rate"]
+            r_change = usdcny_rate - r_old
+            r_pct = (r_change / r_old) * 100
+            r_emoji = "🔺" if r_change > 0 else ("🔻" if r_change < 0 else "➖")
+            rate_change_line = f"\n{r_emoji} 较昨日: {r_change:+.4f} ({r_pct:+.2f}%)"
+        results.append(f"💱 汇率参考\n美元/人民币: {usdcny_rate:.4f}{rate_change_line}")
     else:
         results.append("❌ 汇率: 获取失败")
 
@@ -983,10 +1093,16 @@ def run_once():
     save_report_history(report_history)
 
     if results:
-        header = f"☀️ 早安行情速报\n📅 {today} {weekday}\n{'='*30}"
-        content = header + "\n\n" + "\n\n".join(results)
+        # 构建 header：中文星期 + 交易日提示 + 数据时间戳
+        weekend_hint = ""
+        if is_wkend:
+            weekend_hint = "\n📌 今日休市，数据为上一交易日收盘"
+        elif datetime.now().weekday() == 4:
+            weekend_hint = "\n📌 今日为本周最后一个交易日"
+        header = f"☀️ 早安行情速报\n📅 {today} {weekday}{weekend_hint}\n⏰ 数据时间: {now_time}\n{'—' * 20}"
+        content_lines = [header, ""] + results
         logger.info(f"准备发送早报，webhooks: {config.webhooks}")
-        success = send_feishu("每日行情早报", content)
+        success = send_feishu_post("每日行情早报", content_lines)
         if success:
             logger.info("✅ 早报发送成功")
         else:
